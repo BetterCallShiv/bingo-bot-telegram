@@ -595,7 +595,8 @@ async def rematch_callback(client, callback_query: CallbackQuery):
             lambda u=uid, url=join_url: app.send_message(
                 u,
                 f"🔁 **Rematch time!** {callback_query.from_user.first_name} started a new game!\n"
-                f"[Tap here to rejoin]({url})"
+                f"[Tap here to rejoin]({url})",
+                disable_web_page_preview=True
             ),
             f"rematch_callback/notify/{uid}"
         )
