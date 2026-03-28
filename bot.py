@@ -220,7 +220,7 @@ def get_card_markup(session_id, user_id):
         keyboard.append(row_buttons)
     _, line_count, _ = player.is_win()
     bingo_letters = list("BINGO")
-    progress_str = "  ".join([f"{bingo_letters[i]}" if i < line_count else " _ " for i in range(5)])
+    progress_str = " ".join([f"{bingo_letters[i]}" if i < line_count else " _ " for i in range(5)])
     keyboard.append([InlineKeyboardButton(f"{progress_str}", callback_data="none")])
     if not session.game_started and not session.game_over:
         status_btn = InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
