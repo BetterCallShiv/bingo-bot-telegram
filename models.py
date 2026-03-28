@@ -43,7 +43,7 @@ class GameSession:
         self.admin_id = None
         self.winners = []
         self.picks = {}
-        self.user_names = {} # uid -> name
+        self.user_names = {}
         self.last_activity = time.time()
 
     def touch(self):
