@@ -20,7 +20,7 @@ API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not all([API_ID, API_HASH, BOT_TOKEN]):
-    logger.error("Please set API_ID, API_HASH, and BOT_TOKEN in your .env file.")
+    logger.error("Please set API_ID, API_HASH and BOT_TOKEN in your .env file.")
     exit(1)
 app = Client("BCS-Bingo-Bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 gm = GameManager()
