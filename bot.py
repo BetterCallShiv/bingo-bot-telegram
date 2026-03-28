@@ -149,6 +149,8 @@ def get_card_text(session_id, user_id):
         is_win, count, _ = player.is_win()
         winners_names = ", ".join([f"**{w}**" for w in session.winners])
         if is_win:
+            if len(session.winners) > 1:
+                return f"🤝 **TIE MATCH!** 🤝\nWinners: {winners_names}"
             return f"🎊 **BINGO! YOU WON!** 🎊"
         if session.winners:
             return f"🏁 **Game Over!**\n🏆 Winner: {winners_names}"
