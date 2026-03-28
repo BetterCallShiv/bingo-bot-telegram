@@ -176,8 +176,6 @@ def get_lobby_markup(session_id):
             InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_lobby:{session_id}"),
             InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
         ])
-    else:
-        keyboard.append([InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -676,4 +674,3 @@ async def main():
 
 if __name__ == "__main__":
     app.run(main())
-
