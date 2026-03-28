@@ -133,14 +133,13 @@ def get_card_markup(session_id, user_id):
         for c in range(5):
             val = player.data[r][c]
             is_marked = (r, c) in player.marked
-            is_called = val in session.called_numbers
             btn_text = format_cell_text(val, is_marked)
             row_buttons.append(InlineKeyboardButton(btn_text, callback_data=f"cell:{session_id}:{user_id}:{r}:{c}"))
         keyboard.append(row_buttons)
     _, line_count, _ = player.is_win()
     bingo_letters = list("BINGO")
-    progress_str = " ".join([f"({bingo_letters[i]})" if i < line_count else "_" for i in range(5)])
-    keyboard.append([InlineKeyboardButton(f"✨ Level: {progress_str}", callback_data="none")])
+    progress_str = " ".join([f"{bingo_letters[i]}" if i < line_count else "_" for i in range(5)])
+    keyboard.append([InlineKeyboardButton(f"{progress_str}", callback_data="none")])
     if not session.game_started and not session.game_over:
         status_btn = InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
     elif session.game_over:
@@ -193,10 +192,19 @@ async def handle_game_pick(session_id, num, picker_name):
         if winners:
             session.game_over = True
             session.game_started = False
-            win_msg = f"🏆 **BINGO!** 🏆\n{', '.join(['**' + w.user_name + '**' for w in winners])} won the game!"
+            if len(winners) > 1:
+                win_msg = f"🤝 **TIE MATCH! (DRAW)** 🤝\n{', '.join(['**' + w.user_name + '**' for w in winners])} both hit BINGO!"
+            else:
+                win_msg = f"🏆 **BINGO!** 🏆\n**{winners[0].user_name}** won the game!"
             await broadcast_to_lobby(session_id, win_msg)
             await broadcast_to_players(session_id, win_msg, update_cards=True)
             logger.info(f"[Session {session_id}] Game over. Winner(s): {[w.user_name for w in winners]}")
+        elif len(session.called_numbers) == 25:
+            session.game_over = True
+            session.game_started = False
+            draw_msg = "🏁 **DRAW!** 🏁\nAll 25 numbers have been called. No one reached 5 lines!"
+            await broadcast_to_lobby(session_id, draw_msg)
+            await broadcast_to_players(session_id, draw_msg, update_cards=True)
         else:
             await broadcast_to_players(session_id, announcement, update_cards=True)
         return True
