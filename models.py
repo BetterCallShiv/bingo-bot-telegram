@@ -112,6 +112,7 @@ class GameSession:
         self.inline_message_id = None
         self.admin_id = None
         self.winners = []
+        self.picks = {}
         self.user_names = {}
         self.last_activity = time.time()
 
@@ -142,4 +143,3 @@ class GameManager:
             logger.info(f"Cleaned up stale session: {sid}")
         if stale:
             logger.info(f"Session cleanup: removed {len(stale)} stale session(s). Active: {len(self.sessions)}")
-
