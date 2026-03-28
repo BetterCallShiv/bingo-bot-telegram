@@ -50,5 +50,5 @@ def check_win_condition(card_data, marked_indices):
 def format_cell_text(value, is_marked):
     text = str(value)
     if is_marked:
-        return f"✅ {text}"
+        return f"{text} ✅"
     return text

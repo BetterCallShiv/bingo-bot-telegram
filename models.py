@@ -15,6 +15,7 @@ class BingoCard:
         self.data = custom_data if custom_data else generate_card_data()
         self.marked = set()
         self.last_card_msg_id = None
+        self.match_log_msg_id = None
 
     def toggle_mark(self, row, col):
         if (row, col) in self.marked:
@@ -40,12 +41,16 @@ class GameSession:
         self.lobby_header_id = None
         self.inline_message_id = None
         self.admin_id = None
+        self.winners = []
+        self.picks = {}
+        self.user_names = {} # uid -> name
         self.last_activity = time.time()
 
     def touch(self):
         self.last_activity = time.time()
 
     def add_player(self, user_id, user_name):
+        self.user_names[user_id] = user_name
         if user_id not in self.players:
             self.player_order.append(user_id)
             self.players[user_id] = None 
@@ -78,10 +83,14 @@ class GameSession:
             return
         self.current_turn_index = (self.current_turn_index + 1) % len(self.player_order)
 
-    def draw_number(self, num):
+    def draw_number(self, num, picker_id=None):
         if num in self.available_numbers:
             self.available_numbers.remove(num)
             self.called_numbers.add(num)
+            if picker_id:
+                if picker_id not in self.picks:
+                    self.picks[picker_id] = []
+                self.picks[picker_id].append(num)
             for player in self.players.values():
                 if player is None: continue
                 for r in range(5):
@@ -102,6 +111,8 @@ class GameSession:
         self.lobby_header_id = None
         self.inline_message_id = None
         self.admin_id = None
+        self.winners = []
+        self.user_names = {}
         self.last_activity = time.time()
 
 

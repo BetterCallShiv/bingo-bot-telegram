@@ -9,11 +9,7 @@ import string
 from dotenv import load_dotenv
 from pyrogram.errors import FloodWait
 from pyrogram import Client, filters, idle
-from pyrogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
-    InlineQuery, InlineQueryResultArticle, InputTextMessageContent,
-    ChosenInlineResult, BotCommand
-)
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InlineQuery, InlineQueryResultArticle, InputTextMessageContent, ChosenInlineResult, BotCommand
 from models import GameManager, BingoCard, GameSession
 from utils import format_cell_text, parse_custom_grid
 
@@ -58,10 +54,11 @@ async def _api_call_with_retry(coro_fn, context=""):
 async def broadcast_to_lobby(session_id, text, markup=None):
     session = gm.get_session(session_id)
     if str(session_id).replace("-", "").isdigit():
-        await _api_call_with_retry(
-            lambda: app.send_message(int(session_id), text),
-            f"broadcast_to_lobby/group/{session_id}"
-        )
+        if session.lobby_header_id:
+            await _api_call_with_retry(
+                lambda: app.edit_message_text(int(session_id), session.lobby_header_id, text=text, reply_markup=markup),
+                f"broadcast_to_lobby/group/{session_id}"
+            )
     elif session.inline_message_id:
         await _api_call_with_retry(
             lambda: app.edit_inline_text(session.inline_message_id, text, reply_markup=markup),
@@ -69,33 +66,118 @@ async def broadcast_to_lobby(session_id, text, markup=None):
         )
 
 
+async def refresh_lobby_markup(session_id):
+    session = gm.get_session(session_id)
+    text = get_lobby_text(session_id)
+    markup = get_lobby_markup(session_id)
+    players_count = len(session.player_order)
+    logger.info(f"[refresh_lobby_markup] Session {session_id} has {players_count} players.")
+    if str(session_id).replace("-", "").isdigit():
+        if session.lobby_header_id:
+            await _api_call_with_retry(
+                lambda: app.edit_message_text(int(session_id), session.lobby_header_id, text=text, reply_markup=markup),
+                f"refresh_lobby_markup/group/{session_id}"
+            )
+    elif session.inline_message_id:
+        await _api_call_with_retry(
+            lambda: app.edit_inline_text(session.inline_message_id, text=text, reply_markup=markup),
+            f"refresh_lobby_markup/inline/{session.inline_message_id}"
+        )
+
+
 async def broadcast_to_players(session_id, text, update_cards=True):
     session = gm.get_session(session_id)
     for uid in session.player_order:
         player = session.players.get(uid)
-        if not player:
+        if not player or not player.last_card_msg_id:
             continue
-        await _api_call_with_retry(
-            lambda u=uid: app.send_message(u, text),
-            f"broadcast_to_players/msg/{uid}"
-        )
-        if update_cards and player.last_card_msg_id:
+        if update_cards:
+            new_text = get_card_text(session_id, uid)
+            new_markup = get_card_markup(session_id, uid)
             await _api_call_with_retry(
-                lambda u=uid, p=player: app.edit_message_reply_markup(
-                    u, p.last_card_msg_id, reply_markup=get_card_markup(session_id, u)
-                ),
-                f"broadcast_to_players/card/{uid}"
+                lambda u=uid, mid=player.last_card_msg_id, t=new_text, m=new_markup: 
+                    app.edit_message_text(u, mid, text=t, reply_markup=m),
+                f"broadcast_to_players/edit_card/{uid}"
             )
+            if player.match_log_msg_id:
+                log_text = get_match_log_text(session_id)
+                await _api_call_with_retry(
+                    lambda u=uid, mid=player.match_log_msg_id, t=log_text:
+                        app.edit_message_text(u, mid, text=t),
+                    f"broadcast_to_players/edit_log/{uid}"
+                )
+        elif text:
+            await _api_call_with_retry(
+                lambda u=uid: app.send_message(u, text, disable_notification=True),
+                f"broadcast_to_players/msg/{uid}"
+            )
+            new_text = get_card_text(session_id, uid)
+            new_markup = get_card_markup(session_id, uid)
+            await _api_call_with_retry(
+                lambda u=uid, mid=player.last_card_msg_id, t=new_text, m=new_markup: 
+                    app.edit_message_text(u, mid, text=t, reply_markup=m),
+                f"broadcast_to_players/edit_card/{uid}"
+            )
+            if player.match_log_msg_id:
+                log_text = get_match_log_text(session_id)
+                await _api_call_with_retry(
+                    lambda u=uid, mid=player.match_log_msg_id, t=log_text:
+                        app.edit_message_text(u, mid, text=t),
+                    f"broadcast_to_players/edit_log/{uid}"
+                )
+
+
+def get_match_log_text(session_id):
+    session = gm.get_session(session_id)
+    if not session.picks:
+        return "📝 **Match Log:** No numbers picked yet."
+    log_text = "📝 **Match Log:**\n"
+    for uid in session.player_order:
+        nums = session.picks.get(uid, [])
+        p_name = session.players[uid].user_name
+        nums_str = ", ".join(map(str, nums)) if nums else "-"
+        log_text += f"• {p_name}: {nums_str}\n"
+    return log_text
+
+
+def get_card_text(session_id, user_id):
+    session = gm.get_session(session_id)
+    player = session.players.get(user_id)
+    if not session.game_started and not session.game_over:
+        return "✅ **Random card generated!** Wait for the admin to start the game."
+    if session.game_over:
+        is_win, count, _ = player.is_win()
+        winners_names = ", ".join([f"**{w}**" for w in session.winners])
+        if is_win:
+            return f"🎊 **BINGO! YOU WON!** 🎊"
+        if session.winners:
+            return f"🏁 **Game Over!**\n🏆 Winner: {winners_names}"
+        return "🏁 **Game Over!** It's a draw."
+    curr_id = session.get_current_player_id()
+    curr_player_card = session.players.get(curr_id) if curr_id else None
+    curr_name = curr_player_card.user_name if curr_player_card else "..."
+    if curr_id == user_id:
+        status_line = "👉 **Your turn!** Pick a number from your card."
+    else:
+        status_line = f"⏳ Turn: **{curr_name}** is picking."
+    return f"🚀 **Game Started!**\nWin: Complete 5 lines (B-I-N-G-O)\n{status_line}"
 
 
 def get_lobby_markup(session_id):
     session = gm.get_session(session_id)
+    is_group = str(session_id).replace("-", "").isdigit()
     players_count = len(session.player_order)
-    join_url = f"https://t.me/{BOT_USERNAME}?start=join_{session_id}"
-    keyboard = [
-        [InlineKeyboardButton(f"🎟 Join & Play in PM ({players_count})", url=join_url)],
-        [InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")]
-    ]
+    admin_suffix = f"_a{session.admin_id}" if session.admin_id else ""
+    join_url = f"https://t.me/{BOT_USERNAME}?start=join_{session_id}{admin_suffix}"
+    btn_text = f"🎟 Join & Play in PM ({players_count})" if is_group else "🎟 Join & Play in PM"
+    keyboard = [[InlineKeyboardButton(btn_text, url=join_url)]]
+    if is_group:
+        keyboard.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_lobby:{session_id}"),
+            InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
+        ])
+    else:
+        keyboard.append([InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -138,7 +220,7 @@ def get_card_markup(session_id, user_id):
         keyboard.append(row_buttons)
     _, line_count, _ = player.is_win()
     bingo_letters = list("BINGO")
-    progress_str = " ".join([f"{bingo_letters[i]}" if i < line_count else "_" for i in range(5)])
+    progress_str = "  ".join([f"{bingo_letters[i]}" if i < line_count else " _ " for i in range(5)])
     keyboard.append([InlineKeyboardButton(f"{progress_str}", callback_data="none")])
     if not session.game_started and not session.game_over:
         status_btn = InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
@@ -162,18 +244,22 @@ def get_card_markup(session_id, user_id):
 def get_lobby_text(session_id):
     session = gm.get_session(session_id)
     text = "📢 **Bingo Lobby Open!**\nClick the button below to join and play in PM."
-    if session.players:
-        ready_players = [p.user_name for p in session.players.values() if p is not None]
-        if ready_players:
-            text += f"\n\n✅ **Ready:** {', '.join(ready_players)}"
+    if session.player_order:
+        names = []
+        for uid in session.player_order:
+            p_name = session.user_names.get(uid, f"User {uid}")
+            names.append(p_name)
+        text += f"\n\n✅ **Joined:** {', '.join(names)}"
     return text
 
 
-async def handle_game_pick(session_id, num, picker_name):
+async def handle_game_pick(session_id, num, picker_id):
     session = gm.get_session(session_id)
     if session.game_over:
         return False
-    if session.draw_number(num):
+    picker_card = session.players.get(picker_id)
+    picker_name = picker_card.user_name if picker_card else "..."
+    if session.draw_number(num, picker_id=picker_id):
         session.next_turn()
         curr_id = session.get_current_player_id()
         curr_player_card = session.players.get(curr_id) if curr_id else None
@@ -196,17 +282,18 @@ async def handle_game_pick(session_id, num, picker_name):
                 win_msg = f"🤝 **TIE MATCH! (DRAW)** 🤝\n{', '.join(['**' + w.user_name + '**' for w in winners])} both hit BINGO!"
             else:
                 win_msg = f"🏆 **BINGO!** 🏆\n**{winners[0].user_name}** won the game!"
+            session.winners = [w.user_name for w in winners]
             await broadcast_to_lobby(session_id, win_msg)
-            await broadcast_to_players(session_id, win_msg, update_cards=True)
+            await broadcast_to_players(session_id, None, update_cards=True)
             logger.info(f"[Session {session_id}] Game over. Winner(s): {[w.user_name for w in winners]}")
         elif len(session.called_numbers) == 25:
             session.game_over = True
             session.game_started = False
             draw_msg = "🏁 **DRAW!** 🏁\nAll 25 numbers have been called. No one reached 5 lines!"
             await broadcast_to_lobby(session_id, draw_msg)
-            await broadcast_to_players(session_id, draw_msg, update_cards=True)
+            await broadcast_to_players(session_id, None, update_cards=True)
         else:
-            await broadcast_to_players(session_id, announcement, update_cards=True)
+            await broadcast_to_players(session_id, None, update_cards=True)
         return True
     return False
 
@@ -237,11 +324,13 @@ async def notify_lobby_setup(session_id, user_name, current_user_id):
 @app.on_inline_query()
 async def inline_handler(client, inline_query: InlineQuery):
     session_id = generate_session_id()
+    session = gm.get_session(session_id)
+    session.admin_id = inline_query.from_user.id
     results = [
         InlineQueryResultArticle(
             id=session_id,
             title="🎮 Start a Bingo Match!",
-            description="Invite friends to a 1-25 private Bingo game.",
+            description="Invite friends to a private Bingo game.",
             input_message_content=InputTextMessageContent(get_lobby_text(session_id)),
             reply_markup=get_lobby_markup(session_id)
         )
@@ -253,9 +342,9 @@ async def inline_handler(client, inline_query: InlineQuery):
 async def chosen_result_handler(client, chosen_result: ChosenInlineResult):
     session_id = chosen_result.result_id
     session = gm.get_session(session_id)
-    session.admin_id = chosen_result.from_user.id
     session.inline_message_id = chosen_result.inline_message_id
-    logger.info(f"Inline session {session_id} created by admin {session.admin_id} (MSID: {session.inline_message_id})")
+    logger.info(f"Inline session {session_id} confirmed by admin. Refreshing lobby...")
+    await refresh_lobby_markup(session_id)
 
 
 @app.on_message(filters.command("start"))
@@ -263,22 +352,17 @@ async def start_handler(client, message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name
     if len(message.command) > 1 and message.command[1].startswith("join_"):
-        session_id = message.command[1].split("_")[1]
+        parts = message.command[1].replace("join_", "").split("_a")
+        session_id = parts[0]
         session = gm.get_session(session_id)
+        if len(parts) > 1 and session.admin_id is None:
+            session.admin_id = int(parts[1])
         if session.game_started or session.game_over:
             await message.reply_text("Sorry, this game is already started or finished!"); return
         if session.add_player(user_id, user_name):
-            if str(session_id).replace("-", "").isdigit() and session.lobby_header_id:
-                try:
-                    await app.edit_message_reply_markup(int(session_id), session.lobby_header_id, reply_markup=get_lobby_markup(session_id))
-                except Exception as e:
-                    logger.warning(f"[start_handler] Failed to update group lobby markup: {e}")
-            elif session.inline_message_id:
-                try:
-                    await app.edit_inline_reply_markup(session.inline_message_id, reply_markup=get_lobby_markup(session_id))
-                except Exception as e:
-                    logger.warning(f"[start_handler] Failed to update inline lobby markup: {e}")
-                 
+            if session.admin_id is None:
+                session.admin_id = user_id
+            await refresh_lobby_markup(session_id)
             await message.reply_text(f"✅ You've joined the Bingo match!\n\n🎲 **How do you want your card?**", reply_markup=get_card_choice_markup(session_id))
         else:
             await message.reply_text("You're already in the lobby!")
@@ -350,7 +434,7 @@ async def start_game_callback(client, callback_query: CallbackQuery):
     random.shuffle(session.player_order)
     curr_id = session.get_current_player_id()
     curr_name = session.players[curr_id].user_name
-    msg_text = f"🚀 **Game Started!**\nWin: Complete 5 lines (B-I-N-G-O)\nTurn 1: **{curr_name}** is picking."
+    msg_text = get_card_text(session_id, session.player_order[0])
     if callback_query.inline_message_id:
         try:
             await app.edit_inline_text(callback_query.inline_message_id, msg_text)
@@ -361,20 +445,19 @@ async def start_game_callback(client, callback_query: CallbackQuery):
     for uid in session.player_order:
         player = session.players.get(uid)
         if not player:
-            logger.warning(f"[start_game_callback] No card found for player {uid}, skipping.")
             continue
         try:
-            await app.send_message(uid, msg_text)
-        except Exception as e:
-            logger.warning(f"[start_game_callback] Failed to message player {uid}: {e}")
-        try:
+            p_text = get_card_text(session_id, uid)
+            p_markup = get_card_markup(session_id, uid)
             if player.last_card_msg_id:
-                await app.edit_message_reply_markup(uid, player.last_card_msg_id, reply_markup=get_card_markup(session_id, uid))
+                await app.edit_message_text(uid, player.last_card_msg_id, text=p_text, reply_markup=p_markup)
             else:
-                sent_msg = await app.send_message(uid, "Your private card:", reply_markup=get_card_markup(session_id, uid))
-                player.last_card_msg_id = sent_msg.id
+                msg = await app.send_message(uid, p_text, reply_markup=p_markup)
+                player.last_card_msg_id = msg.id
+            log_msg = await app.send_message(uid, get_match_log_text(session_id))
+            player.match_log_msg_id = log_msg.id
         except Exception as e:
-            logger.warning(f"[start_game_callback] Failed to send/update card for player {uid}: {e}")
+            logger.warning(f"[start_game_callback] Failed to update card for player {uid}: {e}")
 
 
 @app.on_callback_query(filters.regex("^show_picker:"))
@@ -404,7 +487,7 @@ async def pick_callback(client, callback_query: CallbackQuery):
         await callback_query.answer("Processing…"); return
     _processing_callbacks.add(dedup_key)
     try:
-        if not await handle_game_pick(session_id, int(num), callback_query.from_user.first_name):
+        if not await handle_game_pick(session_id, int(num), callback_query.from_user.id):
             await callback_query.answer("Taken!")
     finally:
         _processing_callbacks.discard(dedup_key)
@@ -427,7 +510,7 @@ async def cell_callback(client, callback_query: CallbackQuery):
                 await callback_query.answer("Processing…"); return
             _processing_callbacks.add(dedup_key)
             try:
-                await handle_game_pick(session_id, val, callback_query.from_user.first_name)
+                await handle_game_pick(session_id, val, callback_query.from_user.id)
             finally:
                 _processing_callbacks.discard(dedup_key)
         else:
@@ -475,13 +558,7 @@ async def kick_handler(client, message):
     kick_msg = f"👢 **{target_name}** has been removed from the game."
     await message.reply_text(kick_msg)
     await broadcast_to_players(session_id, kick_msg, update_cards=True)
-    if session.lobby_header_id:
-        await _api_call_with_retry(
-            lambda: app.edit_message_reply_markup(
-                int(session_id), session.lobby_header_id, reply_markup=get_lobby_markup(session_id)
-            ),
-            "kick_handler/lobby_refresh"
-        )
+    await refresh_lobby_markup(session_id)
     if session.game_started and len(session.player_order) < 2:
         session.game_over = True
         session.game_started = False
@@ -512,13 +589,13 @@ async def rematch_callback(client, callback_query: CallbackQuery):
         if msg:
             session.lobby_header_id = msg.id
     await callback_query.answer("🔁 Rematch lobby created!")
-    join_url = f"https://t.me/{BOT_USERNAME}?start=join_{session_id}"
     for uid in prev_players:
+        join_url = f"https://t.me/{BOT_USERNAME}?start=join_{session_id}_a{session.admin_id}"
         await _api_call_with_retry(
-            lambda u=uid: app.send_message(
+            lambda u=uid, url=join_url: app.send_message(
                 u,
                 f"🔁 **Rematch time!** {callback_query.from_user.first_name} started a new game!\n"
-                f"[Tap here to rejoin]({join_url})"
+                f"[Tap here to rejoin]({url})"
             ),
             f"rematch_callback/notify/{uid}"
         )
