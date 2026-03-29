@@ -232,7 +232,7 @@ def get_card_markup(session_id, user_id):
             status_btn = InlineKeyboardButton("🎯 YOUR TURN! Pick a Number", callback_data=f"show_picker:{session_id}")
         else:
             curr_name = session.players[curr_player_id].user_name if curr_player_id in session.players else "..."
-            status_btn = InlineKeyboardButton(f"⏳ Waiting for {curr_name}...", callback_data="none")
+            status_btn = InlineKeyboardButton(f"⏳ {curr_name}'s Turn...", callback_data="none")
     keyboard.append([status_btn])
     if not session.game_over:
         keyboard.append([InlineKeyboardButton("🏆 Bingo!", callback_data=f"bingo:{session_id}:{user_id}")])
