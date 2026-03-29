@@ -5,7 +5,7 @@ import time
 import logging
 from utils import generate_card_data, check_win_condition
 logger = logging.getLogger(__name__)
-SESSION_TTL_SECONDS = 7200
+SESSION_TTL_SECONDS = 600
 
 
 class BingoCard:
