@@ -367,7 +367,13 @@ async def start_handler(client, message):
         else:
             await message.reply_text("You're already in the lobby!")
         return
-    await message.reply_text(f"Welcome to Bingo Bot! Use `@{BOT_USERNAME}` me in any chat to invite friends.")
+    welcome_text = (
+        f"👋 **Welcome to Bingo Bot!**\n\n"
+        f"Ready to play? Use `@{BOT_USERNAME}` followed by a space in any chat to invite friends.\n"
+        f"Or add me to a group and use `/play` to open a Bingo lobby there!\n\n"
+        f"❓ **New to the game?** Send /help to see the full game rules and instructions."
+    )
+    await message.reply_text(welcome_text)
 
 
 @app.on_message(filters.command(["play"]) & filters.group)
@@ -614,21 +620,26 @@ async def restart_handler(client, message):
 async def help_handler(client, message):
     help_text = (
         f"🎮 **Bingo Bot — Help**\n\n"
-        f"**How to play:**\n"
-        f"1️⃣ In any chat, type `@{BOT_USERNAME}` to invite friends via inline mode.\n"
-        f"2️⃣ Alternatively, use `/play` in a **group** to open a lobby there.\n"
+        f"**How to Start a Match:**\n"
+        f"1️⃣ In any chat type `@{BOT_USERNAME}` to invite friends via inline mode.\n"
+        f"2️⃣ Alternatively use `/play` in a group to open a lobby there.\n"
         f"3️⃣ Everyone clicks **Join & Play** and picks a card (random or custom).\n"
-        f"4️⃣ The host clicks **Start Game** when everyone is ready.\n"
-        f"5️⃣ On your turn, pick a number — first to complete **5 lines** wins! 🏆\n\n"
+        f"4️⃣ The host clicks **Start Game** when everyone is ready.\n\n"
+        f"🎲 **Game Rules:**\n"
+        f"• The game is played on a 5x5 grid with numbers from 1 to 25.\n"
+        f"• Players take turns picking a number. When a number is picked, it gets marked on everyone's card.\n"
+        f"• To score a line, you must mark all 5 numbers in a row, column or diagonal.\n"
+        f"• The first person to complete **5 lines** wins the game! 🏆\n\n"
+        f"**Card Tips:**\n"
+        f"• **Random Card** — numbers placed automatically.\n"
+        f"• **Custom Card** — send 25 unique numbers (1–25) in any order, e.g. `5 12 3 ...`\n\n"
         f"**Commands:**\n"
+        f"`/start` — Shows the welcome message\n"
         f"`/play` — Start a Bingo lobby in a group chat\n"
         f"`/restart` — Reset the current game in a group\n"
         f"`/kick` — Reply to a player's message to kick them (Host only)\n"
         f"`/about` — Credits and bot info\n"
-        f"`/help` — Show this help message\n\n"
-        f"**Card Tips:**\n"
-        f"• **Random Card** — numbers placed automatically.\n"
-        f"• **Custom Card** — send 25 unique numbers (1–25) in any order, e.g. `5 12 3 ...`"
+        f"`/help` — Show this help message"
     )
     await message.reply_text(help_text)
 
@@ -651,9 +662,10 @@ async def main():
     BOT_USERNAME = me.username
     logger.info(f"Bot started as @{BOT_USERNAME}")
     await app.set_bot_commands([
+        BotCommand("start", "Shows the start message"),
         BotCommand("play", "Start a new Bingo lobby"),
         BotCommand("restart", "Reset the current game"),
-        BotCommand("kick", "Remove a player (reply to msg)"),
+        BotCommand("kick", "Remove a player from game (reply to msg)"),
         BotCommand("about", "Credits and bot info"),
         BotCommand("help", "How to play bingo")
     ])
