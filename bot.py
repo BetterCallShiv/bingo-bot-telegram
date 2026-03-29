@@ -173,11 +173,11 @@ def get_lobby_markup(session_id):
     join_url = f"https://t.me/{BOT_USERNAME}?start=join_{session_id}{admin_suffix}"
     btn_text = f"🎟 Join & Play in PM ({players_count})" if is_group else "🎟 Join & Play in PM"
     keyboard = [[InlineKeyboardButton(btn_text, url=join_url)]]
-    if is_group:
-        keyboard.append([
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_lobby:{session_id}"),
-            InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
-        ])
+    # if is_group:
+    #     keyboard.append([
+    #         InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_lobby:{session_id}"),
+    #         InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
+    #     ])
     return InlineKeyboardMarkup(keyboard)
 
 
