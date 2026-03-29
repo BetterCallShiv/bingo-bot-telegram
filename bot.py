@@ -7,14 +7,17 @@ import asyncio
 import signal
 import string
 from dotenv import load_dotenv
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InlineQuery, InlineQueryResultArticle, InputTextMessageContent, ChosenInlineResult, BotCommand
 from models import GameManager, BingoCard, GameSession
 from utils import format_cell_text, parse_custom_grid
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+)
+logger = logging.getLogger("BCS-Bingo-Bot")
 load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
@@ -29,7 +32,9 @@ _processing_callbacks: set = set()
 
 
 def generate_session_id():
-    return "".join(random.choices(string.ascii_letters + string.digits, k=8))
+    sid = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+    logger.debug(f"Generated new session ID: {sid}")
+    return sid
 
 
 def format_grid_log(grid):
@@ -46,6 +51,9 @@ async def _api_call_with_retry(coro_fn, context=""):
                 await asyncio.sleep(fw.value)
             else:
                 logger.warning(f"[{context}] Still rate-limited after retry, giving up.")
+        except MessageNotModified:
+            logger.debug(f"[{context}] Message not modified (content identical). Ignoring.")
+            return
         except Exception as e:
             logger.warning(f"[{context}] Error: {e}")
             break
@@ -55,11 +63,13 @@ async def broadcast_to_lobby(session_id, text, markup=None):
     session = gm.get_session(session_id)
     if session.group_chat_id:
         if session.lobby_header_id:
+            logger.info(f"[LobbyUpdate] Group {session.group_chat_id} | Session {session_id} | Updating Lobby Header.")
             await _api_call_with_retry(
                 lambda: app.edit_message_text(session.group_chat_id, session.lobby_header_id, text=text, reply_markup=markup),
                 f"broadcast_to_lobby/group/{session_id}"
             )
     elif session.inline_message_id:
+        logger.info(f"[LobbyUpdate] Inline Session {session_id} | Updating Lobby.")
         await _api_call_with_retry(
             lambda: app.edit_inline_text(session.inline_message_id, text, reply_markup=markup),
             f"broadcast_to_lobby/inline/{session.inline_message_id}"
@@ -71,7 +81,7 @@ async def refresh_lobby_markup(session_id):
     text = get_lobby_text(session_id)
     markup = get_lobby_markup(session_id)
     players_count = len(session.player_order)
-    logger.info(f"[refresh_lobby_markup] Session {session_id} has {players_count} players.")
+    logger.info(f"[LobbyStatus] Session {session_id} | Mode: {session.grid_size}x{session.grid_size} | Players: {players_count}.")
     if session.group_chat_id:
         if session.lobby_header_id:
             await _api_call_with_retry(
@@ -270,6 +280,7 @@ async def handle_game_pick(session_id, num, picker_id):
         curr_id = session.get_current_player_id()
         curr_player_card = session.players.get(curr_id) if curr_id else None
         curr_name = curr_player_card.user_name if curr_player_card else "..."
+        logger.info(f"[GameMove] Session {session_id} | User {picker_name} ({picker_id}) picked {num} | Next: {curr_name} ({curr_id})")
         announcement = f"🎱 **{picker_name}** picked number: **{num}**\nNext turn: **{curr_name}**"
         await broadcast_to_lobby(session_id, announcement, markup=get_lobby_markup(session_id))
         winners = []
@@ -291,11 +302,12 @@ async def handle_game_pick(session_id, num, picker_id):
             session.winners = [w.user_name for w in winners]
             await broadcast_to_lobby(session_id, win_msg)
             await broadcast_to_players(session_id, None, update_cards=True)
-            logger.info(f"[Session {session_id}] Game over. Winner(s): {[w.user_name for w in winners]}")
+            logger.info(f"[GameOver] Session {session_id} | Winners: {session.winners}")
         elif len(session.called_numbers) == (session.grid_size * session.grid_size):
             session.game_over = True
             session.game_started = False
             draw_msg = f"🏁 **DRAW!** 🏁\nAll {session.grid_size * session.grid_size} numbers have been called. No one reached {session.grid_size} lines!"
+            logger.info(f"[GameOver/Draw] Session {session_id} | All numbers called.")
             await broadcast_to_lobby(session_id, draw_msg)
             await broadcast_to_players(session_id, None, update_cards=True)
         else:
@@ -308,6 +320,7 @@ async def notify_lobby_setup(session_id, user_name, current_user_id):
     session = gm.get_session(session_id)
     new_text = get_lobby_text(session_id)
     markup = get_lobby_markup(session_id)
+    logger.info(f"[LobbyReady] User {user_name} ({current_user_id}) is ready in session {session_id}")
     if session.group_chat_id:
         try:
             await app.edit_message_text(session.group_chat_id, session.lobby_header_id, text=new_text, reply_markup=markup)
@@ -406,6 +419,7 @@ async def play_handler(client, message):
     if len(message.command) > 1 and message.command[1] in ["6", "6x6"]:
         grid_size = 6
     session_id = generate_session_id()
+    logger.info(f"[Cmd/Play] User {message.from_user.id} | Chat {message.chat.id} | Size: {grid_size}x{grid_size} | New Session: {session_id}")
     session = gm.get_session(session_id, grid_size=grid_size, group_chat_id=message.chat.id)
     session.admin_id = message.from_user.id
     msg = await message.reply_text(get_lobby_text(session_id), reply_markup=get_lobby_markup(session_id))
@@ -428,6 +442,7 @@ async def choice_callback(client, callback_query: CallbackQuery):
         player.last_card_msg_id = sent_msg.id
         await notify_lobby_setup(session_id, user_name, user_id)
     else:
+        logger.info(f"[CardSetup] User {user_name} ({user_id}) chose CUSTOM card for session {session_id}.")
         await callback_query.edit_message_text(f"✍️ Send your {max_num} numbers now (1-{max_num}) in any order.\nExample: `1 2 3 ... {max_num}`")
 
 
@@ -446,11 +461,12 @@ async def custom_grid_handler(client, message):
     max_num = grid_size * grid_size
     grid = parse_custom_grid(message.text, grid_size=grid_size)
     if not grid:
+        logger.info(f"[CardSetup/Fail] User {user_id} sent invalid grid format: '{message.text[:50]}...'")
         await message.reply_text(f"❌ **Invalid Format!**\nPlease send exactly **{max_num} unique numbers** (1-{max_num}).")
         return
     player = BingoCard(user_id, user_name, custom_data=grid, grid_size=grid_size)
     target_session.players[user_id] = player
-    logger.info(f"User {user_name} ({user_id}) set a CUSTOM card for session {target_session_id}:{format_grid_log(player.data)}")
+    logger.info(f"[CardSetup/Success] User {user_name} ({user_id}) | Session {target_session_id} | CUSTOM Grid: {format_grid_log(player.data)}")
     await message.reply_text(f"✅ Custom card set! Preview below.")
     sent_msg = await app.send_message(user_id, "Your private card:", reply_markup=get_card_markup(target_session_id, user_id))
     player.last_card_msg_id = sent_msg.id
@@ -471,6 +487,7 @@ async def start_game_callback(client, callback_query: CallbackQuery):
             await callback_query.answer("Everyone hasn't finished setup yet!", show_alert=True); return
     session.game_started = True
     random.shuffle(session.player_order)
+    logger.info(f"[MatchStart] Session {session_id} | Mode: {session.grid_size}x{session.grid_size} | Order: {session.player_order}")
     curr_id = session.get_current_player_id()
     curr_name = session.players[curr_id].user_name
     msg_text = get_card_text(session_id, session.player_order[0])
@@ -517,6 +534,7 @@ async def back_to_card_callback(client, callback_query: CallbackQuery):
 @app.on_callback_query(filters.regex("^pick:"))
 async def pick_callback(client, callback_query: CallbackQuery):
     _, session_id, num = callback_query.data.split(":")
+    logger.info(f"[Callback/Pick] User {callback_query.from_user.id} picked {num} in session {session_id}")
     session = gm.get_session(session_id)
     if not session.game_started or session.game_over: return
     if session.get_current_player_id() != callback_query.from_user.id:
@@ -541,6 +559,7 @@ async def cell_callback(client, callback_query: CallbackQuery):
     player = session.players.get(int(user_id))
     if not player: return
     val = player.data[int(r)][int(c)]
+    logger.info(f"[Callback/Cell] User {callback_query.from_user.id} clicked cell ({r},{c}) [Value: {val}] in session {session_id}")
     is_turn = (int(user_id) == callback_query.from_user.id and session.get_current_player_id() == int(user_id))
     if val not in session.called_numbers:
         if is_turn:
@@ -562,6 +581,7 @@ async def cell_callback(client, callback_query: CallbackQuery):
 @app.on_callback_query(filters.regex("^bingo:"))
 async def bingo_callback(client, callback_query: CallbackQuery):
     _, session_id, user_id = callback_query.data.split(":")
+    logger.info(f"[Callback/Bingo] User {user_id} claimed BINGO in session {session_id}")
     session = gm.get_session(session_id)
     if not session.game_started or session.game_over: return
     player = session.players.get(int(user_id))
@@ -608,6 +628,7 @@ async def leave_callback(client, callback_query: CallbackQuery):
 async def exit_command_handler(client, message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name
+    logger.info(f"[Cmd/Exit] User {user_id} ({user_name}) requested exit.")
     session_id = None
     if len(message.command) > 1:
         session_id = message.command[1]
@@ -652,6 +673,7 @@ async def exit_command_handler(client, message):
 @app.on_message(filters.command("kick") & filters.group)
 async def kick_handler(client, message):
     chat_id = message.chat.id
+    logger.info(f"[Cmd/Kick] Admin {message.from_user.id} in chat {chat_id} requested kick.")
     group_sessions = gm.get_sessions_for_group(chat_id)
     session = None
     session_id = None
@@ -699,8 +721,10 @@ async def rematch_callback(client, callback_query: CallbackQuery):
     prev_players = list(session.player_order)
     prev_grid_size = session.grid_size
     group_chat_id = session.group_chat_id
+    logger.info(f"[Rematch] Initiation | Session {session_id} | Group: {group_chat_id}")
     if group_chat_id:
         new_session_id = generate_session_id()
+        logger.info(f"[Rematch/NewSession] Old: {session_id} -> New: {new_session_id}")
         new_session = gm.get_session(new_session_id, grid_size=prev_grid_size, group_chat_id=group_chat_id)
         new_session.admin_id = callback_query.from_user.id
         new_text = get_lobby_text(new_session_id)
@@ -796,7 +820,8 @@ async def main():
     ])
     async def periodic_cleanup():
         while True:
-            await asyncio.sleep(1800)
+            await asyncio.sleep(150)
+            logger.info("[Sys/Cleanup] Starting stale session cleanup cycle...")
             gm.cleanup_old_sessions()
     async def graceful_shutdown():
         logger.info("Graceful shutdown initiated. Stopping bot...")
