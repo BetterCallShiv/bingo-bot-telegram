@@ -53,10 +53,10 @@ async def _api_call_with_retry(coro_fn, context=""):
 
 async def broadcast_to_lobby(session_id, text, markup=None):
     session = gm.get_session(session_id)
-    if str(session_id).replace("-", "").isdigit():
+    if session.group_chat_id:
         if session.lobby_header_id:
             await _api_call_with_retry(
-                lambda: app.edit_message_text(int(session_id), session.lobby_header_id, text=text, reply_markup=markup),
+                lambda: app.edit_message_text(session.group_chat_id, session.lobby_header_id, text=text, reply_markup=markup),
                 f"broadcast_to_lobby/group/{session_id}"
             )
     elif session.inline_message_id:
@@ -72,10 +72,10 @@ async def refresh_lobby_markup(session_id):
     markup = get_lobby_markup(session_id)
     players_count = len(session.player_order)
     logger.info(f"[refresh_lobby_markup] Session {session_id} has {players_count} players.")
-    if str(session_id).replace("-", "").isdigit():
+    if session.group_chat_id:
         if session.lobby_header_id:
             await _api_call_with_retry(
-                lambda: app.edit_message_text(int(session_id), session.lobby_header_id, text=text, reply_markup=markup),
+                lambda: app.edit_message_text(session.group_chat_id, session.lobby_header_id, text=text, reply_markup=markup),
                 f"refresh_lobby_markup/group/{session_id}"
             )
     elif session.inline_message_id:
@@ -239,7 +239,8 @@ def get_card_markup(session_id, user_id):
             status_btn = InlineKeyboardButton(f"⏳ {curr_name}'s Turn...", callback_data="none")
     keyboard.append([status_btn])
     if not session.game_over:
-        keyboard.append([InlineKeyboardButton("🏆 Bingo!", callback_data=f"bingo:{session_id}:{user_id}")])
+        keyboard.append([InlineKeyboardButton("🏆 Bingo!", callback_data=f"bingo:{session_id}:{user_id}"),
+                         InlineKeyboardButton("🚪 Leave Game", callback_data=f"leave:{session_id}")])
     else:
         keyboard.append([InlineKeyboardButton("🔁 Rematch!", callback_data=f"rematch:{session_id}")])
     return InlineKeyboardMarkup(keyboard)
@@ -307,10 +308,10 @@ async def notify_lobby_setup(session_id, user_name, current_user_id):
     session = gm.get_session(session_id)
     new_text = get_lobby_text(session_id)
     markup = get_lobby_markup(session_id)
-    if str(session_id).replace("-", "").isdigit():
+    if session.group_chat_id:
         try:
-            await app.edit_message_text(int(session_id), session.lobby_header_id, text=new_text, reply_markup=markup)
-            await app.send_message(int(session_id), f"✅ **{user_name}** is ready!")
+            await app.edit_message_text(session.group_chat_id, session.lobby_header_id, text=new_text, reply_markup=markup)
+            await app.send_message(session.group_chat_id, f"✅ **{user_name}** is ready!")
         except Exception as e:
             logger.warning(f"[notify_lobby_setup] Failed to update group lobby {session_id}: {e}")
     elif session.inline_message_id:
@@ -374,6 +375,15 @@ async def start_handler(client, message):
             session.admin_id = int(parts[1])
         if session.game_started or session.game_over:
             await message.reply_text("Sorry, this game is already started or finished!"); return
+        # Block joining if user is already in any active game
+        for sid, s in gm.sessions.items():
+            if sid != session_id and user_id in s.players and not s.game_over:
+                await message.reply_text(
+                    "❌ You're already in another active Bingo game!\n"
+                    "Finish or leave that game before joining a new one.\n\n"
+                    "Tap **Leave Game** on your existing card to exit."
+                )
+                return
         if session.add_player(user_id, user_name):
             if session.admin_id is None:
                 session.admin_id = user_id
@@ -393,15 +403,11 @@ async def start_handler(client, message):
 
 @app.on_message(filters.command(["play"]) & filters.group)
 async def play_handler(client, message):
-    session_id = str(message.chat.id)
     grid_size = 5
     if len(message.command) > 1 and message.command[1] in ["6", "6x6"]:
         grid_size = 6
-    session = gm.get_session(session_id)
-    if session.game_started and not session.game_over:
-        await message.reply_text("A game is already in progress! Use /restart to end it."); return
-    session.grid_size = grid_size
-    session.reset()
+    session_id = generate_session_id()
+    session = gm.get_session(session_id, grid_size=grid_size, group_chat_id=message.chat.id)
     session.admin_id = message.from_user.id
     msg = await message.reply_text(get_lobby_text(session_id), reply_markup=get_lobby_markup(session_id))
     session.lobby_header_id = msg.id
@@ -564,17 +570,99 @@ async def bingo_callback(client, callback_query: CallbackQuery):
     if is_win:
         await callback_query.answer("You've won! Results announced.", show_alert=True)
     else:
-        await callback_query.answer(f"You have {count}/5 lines.", show_alert=True)
+        lines_needed = session.grid_size
+        await callback_query.answer(f"You have {count}/{lines_needed} lines.", show_alert=True)
+
+
+@app.on_callback_query(filters.regex("^leave:"))
+async def leave_callback(client, callback_query: CallbackQuery):
+    _, session_id = callback_query.data.split(":")
+    session = gm.get_session(session_id)
+    user_id = callback_query.from_user.id
+    user_name = callback_query.from_user.first_name
+    if user_id not in session.players:
+        await callback_query.answer("You're not in this game!", show_alert=True); return
+    if session.game_over:
+        await callback_query.answer("The game is already over.", show_alert=True); return
+    was_their_turn = (session.game_started and session.get_current_player_id() == user_id)
+    session.kick_player(user_id)
+    logger.info(f"[leave_callback] {user_name} ({user_id}) left session {session_id}")
+    await callback_query.edit_message_text(f"🚪 You have left the Bingo game. See you next time!")
+    leave_msg = f"👋 **{user_name}** has left the game."
+    await broadcast_to_players(session_id, leave_msg, update_cards=True)
+    await refresh_lobby_markup(session_id)
+    if session.game_started:
+        if len(session.player_order) < 2:
+            session.game_over = True
+            session.game_started = False
+            end_msg = "⚠️ Not enough players to continue. Game ended!"
+            await broadcast_to_lobby(session_id, end_msg)
+            await broadcast_to_players(session_id, None, update_cards=True)
+        elif was_their_turn:
+            curr_id = session.get_current_player_id()
+            curr_name = session.players[curr_id].user_name if curr_id in session.players else "..."
+            await broadcast_to_lobby(session_id, f"⏭️ Turn skipped — it's now **{curr_name}**'s turn!", markup=get_lobby_markup(session_id))
+            await broadcast_to_players(session_id, None, update_cards=True)
+
+
+@app.on_message(filters.command("exit"))
+async def exit_command_handler(client, message):
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    session_id = None
+    if len(message.command) > 1:
+        session_id = message.command[1]
+    else:
+        for sid, s in gm.sessions.items():
+            if user_id in s.players and not s.game_over:
+                session_id = sid
+                break
+    if not session_id:
+        await message.reply_text("❌ You're not in any active Bingo game!"); return
+    session = gm.sessions.get(session_id)
+    if not session or user_id not in session.players:
+        await message.reply_text("❌ Game session not found or you're not a player there!"); return
+    if session.game_over:
+        await message.reply_text("❌ This game is already over."); return
+    player = session.players.get(user_id)
+    was_their_turn = (session.game_started and session.get_current_player_id() == user_id)
+    session.kick_player(user_id)
+    if player and player.last_card_msg_id:
+        try:
+            await app.edit_message_text(user_id, player.last_card_msg_id, "🚪 You have left the Bingo game. See you next time!")
+        except Exception as e:
+            logger.warning(f"[exit_command_handler] Failed to edit private card for {user_id}: {e}")
+    await message.reply_text("🚪 You have left the Bingo game.")
+    leave_msg = f"👋 **{user_name}** has left the game via /exit."
+    await broadcast_to_players(session_id, leave_msg, update_cards=True)
+    await refresh_lobby_markup(session_id)
+    if session.game_started:
+        if len(session.player_order) < 2:
+            session.game_over = True
+            session.game_started = False
+            end_msg = "⚠️ Not enough players to continue. Game ended!"
+            await broadcast_to_lobby(session_id, end_msg)
+            await broadcast_to_players(session_id, None, update_cards=True)
+        elif was_their_turn:
+            curr_id = session.get_current_player_id()
+            curr_name = session.players[curr_id].user_name if curr_id in session.players else "..."
+            await broadcast_to_lobby(session_id, f"⏭️ Turn skipped — it's now **{curr_name}**'s turn!", markup=get_lobby_markup(session_id))
+            await broadcast_to_players(session_id, None, update_cards=True)
 
 
 @app.on_message(filters.command("kick") & filters.group)
 async def kick_handler(client, message):
-    session_id = str(message.chat.id)
-    session = gm.get_session(session_id)
-    if message.from_user.id != session.admin_id:
-        await message.reply_text("⚠️ Only the game host can kick players!"); return
-    if session.game_over:
-        await message.reply_text("❌ The game is already over."); return
+    chat_id = message.chat.id
+    group_sessions = gm.get_sessions_for_group(chat_id)
+    session = None
+    session_id = None
+    for sid, s in group_sessions:
+        if message.from_user.id == s.admin_id and not s.game_over:
+            session = s
+            session_id = sid
+            break
+    if not session:
+        await message.reply_text("⚠️ Only the game host can kick players, and no active game was found."); return
     if not (message.reply_to_message and message.reply_to_message.from_user):
         await message.reply_text("ℹ️ Reply to a player's message and use `/kick` to remove them."); return
     target_id = message.reply_to_message.from_user.id
@@ -582,7 +670,7 @@ async def kick_handler(client, message):
     if target_id == session.admin_id:
         await message.reply_text("😄 You can't kick yourself!"); return
     if target_id not in session.players:
-        await message.reply_text(f"❌ {target_name} is not in the current game."); return
+        await message.reply_text(f"❌ {target_name} is not in your game."); return
     session.kick_player(target_id)
     logger.info(f"[kick_handler] {target_name} ({target_id}) kicked from session {session_id}")
     await _api_call_with_retry(
@@ -610,38 +698,47 @@ async def rematch_callback(client, callback_query: CallbackQuery):
     if not session.game_over:
         await callback_query.answer("The game isn't over yet!", show_alert=True); return
     prev_players = list(session.player_order)
-    session.reset()
-    session.admin_id = callback_query.from_user.id
-    new_text = get_lobby_text(session_id)
-    markup = get_lobby_markup(session_id)
-    msg = None
-    if str(session_id).replace("-", "").isdigit():
+    prev_grid_size = session.grid_size
+    group_chat_id = session.group_chat_id
+    if group_chat_id:
+        new_session_id = generate_session_id()
+        new_session = gm.get_session(new_session_id, grid_size=prev_grid_size, group_chat_id=group_chat_id)
+        new_session.admin_id = callback_query.from_user.id
+        new_text = get_lobby_text(new_session_id)
+        markup = get_lobby_markup(new_session_id)
         msg = await _api_call_with_retry(
-            lambda: app.send_message(int(session_id), f"🔁 **Rematch!**\n\n{new_text}", reply_markup=markup),
-            "rematch_callback/lobby"
+            lambda: app.send_message(group_chat_id, f"🔁 **Rematch!**\n\n{new_text}", reply_markup=markup),
+            "rematch_callback/group_lobby"
         )
         if msg:
-            session.lobby_header_id = msg.id
-    await callback_query.answer("🔁 Rematch lobby created!")
-    for uid in prev_players:
+            new_session.lobby_header_id = msg.id
+        await callback_query.answer("🔁 Rematch lobby created!")
+        join_url = f"https://t.me/{BOT_USERNAME}?start=join_{new_session_id}_a{new_session.admin_id}"
+        for uid in prev_players:
+            await _api_call_with_retry(
+                lambda u=uid, url=join_url: app.send_message(
+                    u,
+                    f"🔁 **Rematch time!** {callback_query.from_user.first_name} started a new game!\n"
+                    f"[Tap here to rejoin]({url})",
+                    disable_web_page_preview=True
+                ),
+                f"rematch_callback/notify/{uid}"
+            )
+    else:
+        session.reset()
+        session.admin_id = callback_query.from_user.id
         join_url = f"https://t.me/{BOT_USERNAME}?start=join_{session_id}_a{session.admin_id}"
-        await _api_call_with_retry(
-            lambda u=uid, url=join_url: app.send_message(
-                u,
-                f"🔁 **Rematch time!** {callback_query.from_user.first_name} started a new game!\n"
-                f"[Tap here to rejoin]({url})",
-                disable_web_page_preview=True
-            ),
-            f"rematch_callback/notify/{uid}"
-        )
-
-
-@app.on_message(filters.command("restart"))
-async def restart_handler(client, message):
-    session_id = str(message.chat.id)
-    gm.get_session(session_id).reset()
-    gm.cleanup_old_sessions()
-    await message.reply_text("🔄 Game restarted! Ready for a new match.")
+        await callback_query.answer("🔁 Rematch lobby created!")
+        for uid in prev_players:
+            await _api_call_with_retry(
+                lambda u=uid, url=join_url: app.send_message(
+                    u,
+                    f"🔁 **Rematch time!** {callback_query.from_user.first_name} started a new game!\n"
+                    f"[Tap here to rejoin]({url})",
+                    disable_web_page_preview=True
+                ),
+                f"rematch_callback/notify/{uid}"
+            )
 
 
 @app.on_message(filters.command("help"))
@@ -665,8 +762,8 @@ async def help_handler(client, message):
         f"`/start` — Shows the welcome message\n"
         f"`/play` — Start a classic 5x5 Bingo lobby in a group chat\n"
         f"`/play 6` — Start a 6x6 Pro mode lobby in a group chat\n"
-        f"`/restart` — Reset the current game in a group\n"
         f"`/kick` — Reply to a player's message to kick them (Host only)\n"
+        f"`/exit` — Leave the current Bingo game you are in\n"
         f"`/about` — Credits and bot info\n"
         f"`/help` — Show this help message"
     )
@@ -693,8 +790,8 @@ async def main():
     await app.set_bot_commands([
         BotCommand("start", "Shows the start message"),
         BotCommand("play", "Start a 5x5 or 6x6 Bingo lobby (/play 6)"),
-        BotCommand("restart", "Reset the current game"),
         BotCommand("kick", "Remove a player from game (reply to msg)"),
+        BotCommand("exit", "Leave your current Bingo game"),
         BotCommand("about", "Credits and bot info"),
         BotCommand("help", "How to play bingo")
     ])

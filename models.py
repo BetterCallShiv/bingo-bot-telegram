@@ -30,9 +30,10 @@ class BingoCard:
     
 
 class GameSession:
-    def __init__(self, session_id, grid_size=5):
+    def __init__(self, session_id, grid_size=5, group_chat_id=None):
         self.session_id = session_id
         self.grid_size = grid_size
+        self.group_chat_id = group_chat_id
         self.players = {}
         self.player_order = []
         self.current_turn_index = 0
@@ -123,16 +124,19 @@ class GameManager:
     def __init__(self):
         self.sessions = {}
 
-    def get_session(self, chat_id, grid_size=5):
-        if chat_id not in self.sessions:
-            self.sessions[chat_id] = GameSession(chat_id, grid_size=grid_size)
-        session = self.sessions[chat_id]
+    def get_session(self, session_id, grid_size=5, group_chat_id=None):
+        if session_id not in self.sessions:
+            self.sessions[session_id] = GameSession(session_id, grid_size=grid_size, group_chat_id=group_chat_id)
+        session = self.sessions[session_id]
         session.touch()
         return session
 
-    def remove_session(self, chat_id):
-        if chat_id in self.sessions:
-            self.sessions.pop(chat_id, None)
+    def get_sessions_for_group(self, chat_id):
+        return [(sid, s) for sid, s in self.sessions.items() if s.group_chat_id == chat_id]
+
+    def remove_session(self, session_id):
+        if session_id in self.sessions:
+            self.sessions.pop(session_id, None)
 
     def cleanup_old_sessions(self):
         now = time.time()
