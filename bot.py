@@ -131,7 +131,7 @@ def get_match_log_text(session_id):
     session = gm.get_session(session_id)
     if not session.picks:
         return "📝 **Match Log:** No numbers picked yet."
-    log_text = "📝 **Match Log:**\n"
+    log_text = "📝 **Match Log:**\n\n"
     for uid in session.player_order:
         nums = session.picks.get(uid, [])
         p_name = session.players[uid].user_name
