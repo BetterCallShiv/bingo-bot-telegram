@@ -162,7 +162,8 @@ def get_card_text(session_id, user_id):
         status_line = "👉 **Your turn!** Pick a number from your card."
     else:
         status_line = f"⏳ Turn: **{curr_name}** is picking."
-    return f"🚀 **Game Started!**\nWin: Complete 5 lines (B-I-N-G-O)\n{status_line}"
+    bingo_chars = "-".join(list("BINGOO" if session.grid_size == 6 else "BINGO"))
+    return f"🚀 **Game Started!**\nWin: Complete {session.grid_size} lines ({bingo_chars})\n{status_line}"
 
 
 def get_lobby_markup(session_id):
@@ -191,11 +192,13 @@ def get_card_choice_markup(session_id):
 
 def get_picker_markup(session_id):
     session = gm.get_session(session_id)
+    grid_size = session.grid_size
+    max_num = grid_size * grid_size
     keyboard = []
-    all_nums = list(range(1, 26))
-    for i in range(0, 25, 5):
+    all_nums = list(range(1, max_num + 1))
+    for i in range(0, max_num, grid_size):
         row = []
-        for n in all_nums[i:i+5]:
+        for n in all_nums[i:i+grid_size]:
             if n in session.called_numbers:
                 row.append(InlineKeyboardButton("✖️", callback_data="none"))
             else:
@@ -207,20 +210,21 @@ def get_picker_markup(session_id):
 
 def get_card_markup(session_id, user_id):
     session = gm.get_session(session_id)
+    grid_size = session.grid_size
     player = session.players.get(user_id)
     if not player: return None
     keyboard = []
-    for r in range(5):
+    for r in range(grid_size):
         row_buttons = []
-        for c in range(5):
+        for c in range(grid_size):
             val = player.data[r][c]
             is_marked = (r, c) in player.marked
             btn_text = format_cell_text(val, is_marked)
             row_buttons.append(InlineKeyboardButton(btn_text, callback_data=f"cell:{session_id}:{user_id}:{r}:{c}"))
         keyboard.append(row_buttons)
     _, line_count, _ = player.is_win()
-    bingo_letters = list("BINGO")
-    progress_str = " ".join([f"{bingo_letters[i]}" if i < line_count else " _ " for i in range(5)])
+    bingo_letters = list("BINGOO") if grid_size == 6 else list("BINGO")
+    progress_str = " ".join([f"{bingo_letters[i]}" if i < line_count else " _ " for i in range(grid_size)])
     keyboard.append([InlineKeyboardButton(f"{progress_str}", callback_data="none")])
     if not session.game_started and not session.game_over:
         status_btn = InlineKeyboardButton("🚀 Start Game", callback_data=f"start_game:{session_id}")
@@ -243,7 +247,8 @@ def get_card_markup(session_id, user_id):
 
 def get_lobby_text(session_id):
     session = gm.get_session(session_id)
-    text = "📢 **Bingo Lobby Open!**\nClick the button below to join and play in PM."
+    mode_label = "🏆 **6x6 Pro Mode**" if session.grid_size == 6 else "🎮 **5x5 Classic**"
+    text = f"📢 **Bingo Lobby Open!** ({mode_label})\nClick the button below to join and play in PM."
     if session.player_order:
         names = []
         for uid in session.player_order:
@@ -286,10 +291,10 @@ async def handle_game_pick(session_id, num, picker_id):
             await broadcast_to_lobby(session_id, win_msg)
             await broadcast_to_players(session_id, None, update_cards=True)
             logger.info(f"[Session {session_id}] Game over. Winner(s): {[w.user_name for w in winners]}")
-        elif len(session.called_numbers) == 25:
+        elif len(session.called_numbers) == (session.grid_size * session.grid_size):
             session.game_over = True
             session.game_started = False
-            draw_msg = "🏁 **DRAW!** 🏁\nAll 25 numbers have been called. No one reached 5 lines!"
+            draw_msg = f"🏁 **DRAW!** 🏁\nAll {session.grid_size * session.grid_size} numbers have been called. No one reached {session.grid_size} lines!"
             await broadcast_to_lobby(session_id, draw_msg)
             await broadcast_to_players(session_id, None, update_cards=True)
         else:
@@ -323,16 +328,26 @@ async def notify_lobby_setup(session_id, user_name, current_user_id):
 
 @app.on_inline_query()
 async def inline_handler(client, inline_query: InlineQuery):
-    session_id = generate_session_id()
-    session = gm.get_session(session_id)
-    session.admin_id = inline_query.from_user.id
+    session_id_5 = generate_session_id()
+    session_id_6 = generate_session_id()
+    session_5 = gm.get_session(session_id_5, grid_size=5)
+    session_5.admin_id = inline_query.from_user.id
+    session_6 = gm.get_session(session_id_6, grid_size=6)
+    session_6.admin_id = inline_query.from_user.id
     results = [
         InlineQueryResultArticle(
-            id=session_id,
-            title="🎮 Start a Bingo Match!",
-            description="Invite friends to a private Bingo game.",
-            input_message_content=InputTextMessageContent(get_lobby_text(session_id)),
-            reply_markup=get_lobby_markup(session_id)
+            id=session_id_5,
+            title="🎮 Start a 5x5 Bingo Match!",
+            description="Classic 25-number private Bingo game.",
+            input_message_content=InputTextMessageContent(get_lobby_text(session_id_5)),
+            reply_markup=get_lobby_markup(session_id_5)
+        ),
+        InlineQueryResultArticle(
+            id=session_id_6,
+            title="🎮 Start a 6x6 Bingo Match!",
+            description="Larger 36-number private Bingo game.",
+            input_message_content=InputTextMessageContent(get_lobby_text(session_id_6)),
+            reply_markup=get_lobby_markup(session_id_6)
         )
     ]
     await inline_query.answer(results, cache_time=1)
@@ -379,9 +394,13 @@ async def start_handler(client, message):
 @app.on_message(filters.command(["play"]) & filters.group)
 async def play_handler(client, message):
     session_id = str(message.chat.id)
+    grid_size = 5
+    if len(message.command) > 1 and message.command[1] in ["6", "6x6"]:
+        grid_size = 6
     session = gm.get_session(session_id)
     if session.game_started and not session.game_over:
         await message.reply_text("A game is already in progress! Use /restart to end it."); return
+    session.grid_size = grid_size
     session.reset()
     session.admin_id = message.from_user.id
     msg = await message.reply_text(get_lobby_text(session_id), reply_markup=get_lobby_markup(session_id))
@@ -393,8 +412,10 @@ async def choice_callback(client, callback_query: CallbackQuery):
     _, ctype, session_id = callback_query.data.split(":")
     user_id, user_name = callback_query.from_user.id, callback_query.from_user.first_name
     session = gm.get_session(session_id)
+    grid_size = session.grid_size
+    max_num = grid_size * grid_size
     if ctype == "random":
-        player = BingoCard(user_id, user_name)
+        player = BingoCard(user_id, user_name, grid_size=grid_size)
         session.players[user_id] = player
         logger.info(f"User {user_name} ({user_id}) generated a RANDOM card for session {session_id}:{format_grid_log(player.data)}")
         await callback_query.edit_message_text(f"✅ Random card generated! Wait for the admin to start the game.")
@@ -402,26 +423,33 @@ async def choice_callback(client, callback_query: CallbackQuery):
         player.last_card_msg_id = sent_msg.id
         await notify_lobby_setup(session_id, user_name, user_id)
     else:
-        await callback_query.edit_message_text(f"✍️ Send your 25 numbers now (1-25) in any order.\nExample: `1 2 3 ... 25`")
+        await callback_query.edit_message_text(f"✍️ Send your {max_num} numbers now (1-{max_num}) in any order.\nExample: `1 2 3 ... {max_num}`")
 
 
 @app.on_message(filters.text & filters.private & ~filters.regex("^/"))
 async def custom_grid_handler(client, message):
-    grid = parse_custom_grid(message.text)
     user_id, user_name = message.from_user.id, message.from_user.first_name
-    if not grid:
-        await message.reply_text("❌ **Invalid Format!**\nPlease send exactly **25 unique numbers** (1-25).")
-        return
+    target_session = None
     for session_id, session in gm.sessions.items():
         if user_id in session.players and session.players[user_id] is None:
-            player = BingoCard(user_id, user_name, custom_data=grid)
-            session.players[user_id] = player
-            logger.info(f"User {user_name} ({user_id}) set a CUSTOM card for session {session_id}:{format_grid_log(player.data)}")
-            await message.reply_text(f"✅ Custom card set! Preview below.")
-            sent_msg = await app.send_message(user_id, "Your private card:", reply_markup=get_card_markup(session_id, user_id))
-            player.last_card_msg_id = sent_msg.id
-            await notify_lobby_setup(session_id, user_name, user_id)
-            return
+            target_session = session
+            target_session_id = session_id
+            break
+    if not target_session:
+        return
+    grid_size = target_session.grid_size
+    max_num = grid_size * grid_size
+    grid = parse_custom_grid(message.text, grid_size=grid_size)
+    if not grid:
+        await message.reply_text(f"❌ **Invalid Format!**\nPlease send exactly **{max_num} unique numbers** (1-{max_num}).")
+        return
+    player = BingoCard(user_id, user_name, custom_data=grid, grid_size=grid_size)
+    target_session.players[user_id] = player
+    logger.info(f"User {user_name} ({user_id}) set a CUSTOM card for session {target_session_id}:{format_grid_log(player.data)}")
+    await message.reply_text(f"✅ Custom card set! Preview below.")
+    sent_msg = await app.send_message(user_id, "Your private card:", reply_markup=get_card_markup(target_session_id, user_id))
+    player.last_card_msg_id = sent_msg.id
+    await notify_lobby_setup(target_session_id, user_name, user_id)
 
 
 @app.on_callback_query(filters.regex("^start_game:"))
@@ -626,16 +654,17 @@ async def help_handler(client, message):
         f"3️⃣ Everyone clicks **Join & Play** and picks a card (random or custom).\n"
         f"4️⃣ The host clicks **Start Game** when everyone is ready.\n\n"
         f"🎲 **Game Rules:**\n"
-        f"• The game is played on a 5x5 grid with numbers from 1 to 25.\n"
+        f"• The game is played on a 5x5 grid (or 6x6 in Pro mode).\n"
         f"• Players take turns picking a number. When a number is picked, it gets marked on everyone's card.\n"
-        f"• To score a line, you must mark all 5 numbers in a row, column or diagonal.\n"
-        f"• The first person to complete **5 lines** wins the game! 🏆\n\n"
+        f"• To score a line, you must mark all numbers in a row, column or diagonal.\n"
+        f"• The first person to complete **5 lines** (or 6 in Pro mode) wins! 🏆\n\n"
         f"**Card Tips:**\n"
         f"• **Random Card** — numbers placed automatically.\n"
-        f"• **Custom Card** — send 25 unique numbers (1–25) in any order, e.g. `5 12 3 ...`\n\n"
+        f"• **Custom Card** — send exactly 25 numbers (or 36 for 6x6), e.g. `5 12 3 ...`\n\n"
         f"**Commands:**\n"
         f"`/start` — Shows the welcome message\n"
-        f"`/play` — Start a Bingo lobby in a group chat\n"
+        f"`/play` — Start a classic 5x5 Bingo lobby in a group chat\n"
+        f"`/play 6` — Start a 6x6 Pro mode lobby in a group chat\n"
         f"`/restart` — Reset the current game in a group\n"
         f"`/kick` — Reply to a player's message to kick them (Host only)\n"
         f"`/about` — Credits and bot info\n"
@@ -663,7 +692,7 @@ async def main():
     logger.info(f"Bot started as @{BOT_USERNAME}")
     await app.set_bot_commands([
         BotCommand("start", "Shows the start message"),
-        BotCommand("play", "Start a new Bingo lobby"),
+        BotCommand("play", "Start a 5x5 or 6x6 Bingo lobby (/play 6)"),
         BotCommand("restart", "Reset the current game"),
         BotCommand("kick", "Remove a player from game (reply to msg)"),
         BotCommand("about", "Credits and bot info"),

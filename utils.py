@@ -3,45 +3,47 @@
 import random
 import re
 
-def generate_card_data():
-    numbers = list(range(1, 26))
+def generate_card_data(grid_size=5):
+    max_num = grid_size * grid_size
+    numbers = list(range(1, max_num + 1))
     random.shuffle(numbers)
     card = []
-    for i in range(0, 25, 5):
-        card.append(numbers[i:i+5])
+    for i in range(0, max_num, grid_size):
+        card.append(numbers[i:i+grid_size])
     return card
 
 
-def parse_custom_grid(text):
+def parse_custom_grid(text, grid_size=5):
+    max_num = grid_size * grid_size
     numbers = re.findall(r'\b\d+\b', text)
     numbers = [int(n) for n in numbers]
-    if len(numbers) != 25:
+    if len(numbers) != max_num:
         return None
-    if any(n < 1 or n > 25 for n in numbers):
+    if any(n < 1 or n > max_num for n in numbers):
         return None
-    if len(set(numbers)) != 25:
+    if len(set(numbers)) != max_num:
         return None
     grid = []
-    for i in range(0, 25, 5):
-        grid.append(numbers[i:i+5])
+    for i in range(0, max_num, grid_size):
+        grid.append(numbers[i:i+grid_size])
     return grid
 
 
-def check_win_condition(card_data, marked_indices):
+def check_win_condition(card_data, marked_indices, grid_size=5):
     line_count = 0
     patterns = []
-    for r in range(5):
-        if all((r, c) in marked_indices for c in range(5)):
+    for r in range(grid_size):
+        if all((r, c) in marked_indices for c in range(grid_size)):
             line_count += 1
             patterns.append(f"Row {r+1}")
-    for c in range(5):
-        if all((r, c) in marked_indices for r in range(5)):
+    for c in range(grid_size):
+        if all((r, c) in marked_indices for r in range(grid_size)):
             line_count += 1
             patterns.append(f"Column {c+1}")
-    if all((i, i) in marked_indices for i in range(5)):
+    if all((i, i) in marked_indices for i in range(grid_size)):
         line_count += 1
         patterns.append("Main Diagonal")
-    if all((i, 4 - i) in marked_indices for i in range(5)):
+    if all((i, (grid_size - 1) - i) in marked_indices for i in range(grid_size)):
         line_count += 1
         patterns.append("Anti-Diagonal")
     return line_count, patterns

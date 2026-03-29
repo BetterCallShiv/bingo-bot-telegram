@@ -9,10 +9,11 @@ SESSION_TTL_SECONDS = 7200
 
 
 class BingoCard:
-    def __init__(self, user_id, user_name, custom_data=None):
+    def __init__(self, user_id, user_name, custom_data=None, grid_size=5):
         self.user_id = user_id
         self.user_name = user_name
-        self.data = custom_data if custom_data else generate_card_data()
+        self.grid_size = grid_size
+        self.data = custom_data if custom_data else generate_card_data(self.grid_size)
         self.marked = set()
         self.last_card_msg_id = None
         self.match_log_msg_id = None
@@ -24,18 +25,19 @@ class BingoCard:
             self.marked.add((row, col))
 
     def is_win(self):
-        count, patterns = check_win_condition(self.data, self.marked)
-        return count >= 5, count, patterns
+        count, patterns = check_win_condition(self.data, self.marked, self.grid_size)
+        return count >= self.grid_size, count, patterns
     
 
 class GameSession:
-    def __init__(self, session_id):
+    def __init__(self, session_id, grid_size=5):
         self.session_id = session_id
+        self.grid_size = grid_size
         self.players = {}
         self.player_order = []
         self.current_turn_index = 0
         self.called_numbers = set()
-        self.available_numbers = list(range(1, 26))
+        self.available_numbers = list(range(1, (self.grid_size * self.grid_size) + 1))
         self.game_started = False
         self.game_over = False
         self.lobby_header_id = None
@@ -93,8 +95,8 @@ class GameSession:
                 self.picks[picker_id].append(num)
             for player in self.players.values():
                 if player is None: continue
-                for r in range(5):
-                    for c in range(5):
+                for r in range(self.grid_size):
+                    for c in range(self.grid_size):
                         if player.data[r][c] == num:
                             player.marked.add((r, c))
             return True
@@ -102,7 +104,7 @@ class GameSession:
 
     def reset(self):
         self.called_numbers = set()
-        self.available_numbers = list(range(1, 26))
+        self.available_numbers = list(range(1, (self.grid_size * self.grid_size) + 1))
         self.players = {}
         self.player_order = []
         self.current_turn_index = 0
@@ -121,9 +123,9 @@ class GameManager:
     def __init__(self):
         self.sessions = {}
 
-    def get_session(self, chat_id):
+    def get_session(self, chat_id, grid_size=5):
         if chat_id not in self.sessions:
-            self.sessions[chat_id] = GameSession(chat_id)
+            self.sessions[chat_id] = GameSession(chat_id, grid_size=grid_size)
         session = self.sessions[chat_id]
         session.touch()
         return session
