@@ -375,7 +375,6 @@ async def start_handler(client, message):
             session.admin_id = int(parts[1])
         if session.game_started or session.game_over:
             await message.reply_text("Sorry, this game is already started or finished!"); return
-        # Block joining if user is already in any active game
         for sid, s in gm.sessions.items():
             if sid != session_id and user_id in s.players and not s.game_over:
                 await message.reply_text(
